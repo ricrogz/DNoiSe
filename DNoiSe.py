@@ -7,14 +7,15 @@ import time
 import json
 import codecs
 import pandas
-import urllib
+import urllib.request, urllib.parse, urllib.error
 import random
 import sqlite3
 import datetime
 import requests
 import dns.resolver
+import importlib
 
-reload(sys)
+importlib.reload(sys)
 sys.setdefaultencoding("utf8")
 
 #########################################################################################
@@ -49,10 +50,10 @@ def download_domains():
 	
 	# Download the Cisco Umbrella list. More info: https://s3-us-west-1.amazonaws.com/umbrella-static/index.html
 	try:
-		print >> log_file, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" Downloading the domain list…"
-		urllib.urlretrieve("http://s3-us-west-1.amazonaws.com/umbrella-static/top-1m.csv.zip", filename=working_directory+"domains.zip")
+		print(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" Downloading the domain list…", file=log_file)
+		urllib.request.urlretrieve("http://s3-us-west-1.amazonaws.com/umbrella-static/top-1m.csv.zip", filename=working_directory+"domains.zip")
 	except:
-		print >> log_file, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" Can't download the domain list. Quitting."
+		print(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" Can't download the domain list. Quitting.", file=log_file)
 		exit()
 	
 	# Create a SQLite database and import the domain list
@@ -61,7 +62,7 @@ def download_domains():
 		db.execute("CREATE TABLE Domains (ID INT PRIMARY KEY, Domain TEXT)")
 		
 		# Load the CSV into our database
-		print >> log_file, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" Importing to sqlite…"
+		print(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" Importing to sqlite…", file=log_file)
 		df = pandas.read_csv(working_directory + "domains.zip", compression = 'zip', names = ["ID", "Domain"])
 		df.to_sql("Domains", db, if_exists = "append", index = False)
 	
@@ -69,20 +70,20 @@ def download_domains():
 	
 		os.remove(working_directory + "domains.zip")
 	except:
-		print >> log_file, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" Import failed. Quitting."
+		print(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" Import failed. Quitting.", file=log_file)
 		exit()
 	
 	# Running this on 1st gen Raspberry Pi can take up to 10 minutes. Be patient.
-	print >> log_file, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" Done. It took "+str(round((time.time()-start_time),0))[0:-2]+"s to download and process the list."
+	print(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" Done. It took "+str(round((time.time()-start_time),0))[0:-2]+"s to download and process the list.", file=log_file)
 
 # A simple loop that makes sure we have an Internet connection - it can take a while for pi-hole to get up and running after a reboot.
 while True:
 	try:
-		urllib.urlopen("http://example.com")
-		print >> log_file, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" Got network connection."
+		urllib.request.urlopen("http://example.com")
+		print(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" Got network connection.", file=log_file)
 		break
 	except:
-		print >> log_file, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" Network not up yet, retrying in 10 seconds."
+		print(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" Network not up yet, retrying in 10 seconds.", file=log_file)
 		time.sleep(10)
 
 # Download the top 1M domain list if we don't have it yet.
@@ -91,7 +92,7 @@ if exists == False:
 	download_domains()
 
 if auth == "90b03f6fc88f60ff24f4658bbb34c7332f6487b4bd279d0a69001b7f65dc935a":
-	print >> log_file, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" You forgot to put in the real auth token. Check the config section at the beginning of the script. Quitting."
+	print(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" You forgot to put in the real auth token. Check the config section at the beginning of the script. Quitting.", file=log_file)
 	exit()
 
 db = sqlite3.connect(working_directory+"domains.sqlite")
@@ -108,7 +109,7 @@ while True:
 			all_queries = requests.get("http://pi.hole/admin/api.php?getAllQueries&from="+str(time_from)+"&until="+str(time_until)+"&auth="+auth)
 			break
 		except:
-			print >> log_file, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" API request failed. Retrying in 15 seconds."
+			print(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" API request failed. Retrying in 15 seconds.", file=log_file)
 			time.sleep(15)
 	
 	parsed_all_queries = json.loads(all_queries.text)
@@ -120,7 +121,7 @@ while True:
 			if a[3] != client.replace("127.0.0.1","localhost"):
 				genuine_queries.append(a)
 	except:
-		print >> log_file, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" Pi-hole API response in wrong format. Investigate."
+		print(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" Pi-hole API response in wrong format. Investigate.", file=log_file)
 		exit()
 	
 	# Protection in case the pi-hole logs are empty.
@@ -134,7 +135,7 @@ while True:
 			if a[3] != client.replace("127.0.0.1","localhost"):
 				query_types.append(a[1])
 	except:
-		print >> log_file, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" Pi-hole API response in wrong format. Investigate."
+		print(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" Pi-hole API response in wrong format. Investigate.", file=log_file)
 		exit()
 	
 	# Default to A request if pi-hole logs are empty
@@ -142,7 +143,7 @@ while True:
 		query_types.append("A")
 	
 	if debug_log == True:
-		print >> log_file, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" In the interval from "+time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time_from))+" until "+time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time_until))+", there was on average 1 request every "+str(300.0 / len(genuine_queries))+"s. Total queries: "+str(len(parsed_all_queries["data"]))+", of those are local queries: "+str(len(parsed_all_queries["data"])-len(genuine_queries))+" (excluded)."
+		print(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" In the interval from "+time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time_from))+" until "+time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time_until))+", there was on average 1 request every "+str(300.0 / len(genuine_queries))+"s. Total queries: "+str(len(parsed_all_queries["data"]))+", of those are local queries: "+str(len(parsed_all_queries["data"])-len(genuine_queries))+" (excluded).", file=log_file)
 	
 	while True:
 		# Pick a random domain from the top 1M list
@@ -152,7 +153,7 @@ while True:
 		domain = cursor.fetchone()[0]
 		
 		if debug_log == True:
-			print >> log_file, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" "+rand+", "+domain
+			print(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.mktime(datetime.datetime.now().timetuple())))+" "+rand+", "+domain, file=log_file)
 		
 		# Try to resolve the domain - that's why we're here in the first place, isn't it…
 		try:
