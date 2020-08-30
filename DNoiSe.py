@@ -1,7 +1,6 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-import datetime
 import json
 import logging
 import os
@@ -24,9 +23,9 @@ DEFAULT_CONFIG = {
     # IPs / host names whose queries are to be ignored when analyzing
     # traffic patterns
     "excluded_hosts": ["127.0.0.1", "localhost"],
-    # IP of the pi-hole instance. "127.0.0.1" is valid only when running
+    # IP / host of the pi-hole instance. "127.0.0.1" is valid only when running
     # on the same host as pi-hole.
-    "pihole_ip": "127.0.0.1",
+    "pihole_admin_url": "http://127.0.0.1/admin",
     "log_file": "dnoise.log",
     "domains_file": "domains.sqlite",
     # Log every fake DNS query. Very slow, DO NOT USE in production.
@@ -34,6 +33,10 @@ DEFAULT_CONFIG = {
 }
 TOP_DOMAINS_URL = "http://s3-us-west-1.amazonaws.com/umbrella-static/" \
   "top-1m.csv.zip"
+PIHOLE_API_URL_FMT = "{}/api.php?getAllQueries&from={}&until={}&auth={}"
+
+LOG_INTERVAL = 300
+QUERY_INTERVAL = 60
 
 
 def get_config():
@@ -110,6 +113,59 @@ def download_domains(cfg):
     logging.info("Domains database successfully created.")
 
 
+def format_time(timestamp):
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
+
+
+def get_pihole_queries(cfg, start, end):
+    # This will give us a list of all DNS queries that pi-hole handled in
+    # the past 5 minutes.
+    while True:
+        try:
+            all_queries = requests.get(
+                PIHOLE_API_URL_FMT.format(cfg["pihole_ip"], start, end,
+                                          cfg["auth_token"]))
+            break
+        except Exception:
+            logging.warn("API request failed. Retrying in 15 seconds.")
+            time.sleep(15)
+
+    return json.loads(all_queries.text)
+
+
+def filter_queries(cfg, all_queries):
+    """
+    When determining the rate of DNS queries on the network, we don't want
+    our past fake queries to skew the statistics, therefore we filter out
+    queries made by this machine.
+    We want the types of our fake queries (A/AAA/PTR/…) to proportionally
+    match those of the real traffic.
+    """
+    query_types = []
+    try:
+        for a in all_queries["data"]:
+            if a[3] not in cfg["excluded_hosts"]:
+                query_types.append(a[1])
+    except Exception:
+        logging.error("Got badly formatted pi-hole API response, quitting.")
+        exit(1)
+
+    # Default to A request if pi-hole logs are empty
+    if len(query_types) == 0:
+        query_types.append("A")
+
+    return query_types
+
+
+def get_random_domain(domains_file):
+    # Pick a random domain from the top 1M list
+    rand = str(random.randint(1, 1000000))
+    with sqlite3.connect(domains_file) as db:
+        cursor = db.cursor()
+        cursor.execute(f"SELECT Domain FROM Domains WHERE ID={rand}")
+        return cursor.fetchone()[0]
+
+
 def main():
     cfg = get_config()
     logfile = os.path.join(cfg["work_dir"], cfg["log_file"])
@@ -125,103 +181,50 @@ def main():
 
     wait_for_connection()
 
-    with sqlite3.connect(domains_file) as db:
-        while True:
-            # We want the fake queries to blend in with the organic traffic expected
-            # at each given time of the day, so instead of having a static delay
-            # between individual queries, we'll sample the network activity over
-            # the past 5 minutes and base the frequency on that. We want to add
-            # roughly 10% of additional activity in fake queries.
-            time_until = int(time.mktime(datetime.datetime.now().timetuple()))
-            time_from = time_until - 300
+    while True:
+        """
+        We want the fake queries to blend in with the organic traffic expected
+        at each given time of the day, so instead of having a static delay
+        between individual queries, we'll sample the network activity over
+        the past 5 minutes and base the frequency on that. We want to add
+        roughly 10% of additional activity in fake queries.
+        """
+        time_until = int(time.time())
+        time_from = time_until - LOG_INTERVAL
 
-            # This will give us a list of all DNS queries that pi-hole handled in
-            # the past 5 minutes.
-            while True:
-                try:
-                    all_queries = requests.get(
-                        "http://pi.hole/admin/api.php?getAllQueries&from=" +
-                        str(time_from) + "&until=" + str(time_until) +
-                        "&auth=" + cfg["auth_token"])
-                    break
-                except Exception:
-                    logging.warn("API request failed. Retrying in 15 seconds.")
-                    time.sleep(15)
+        all_queries = get_pihole_queries(cfg, time_from, time_until)
+        query_types = filter_queries(cfg, all_queries)
 
-            parsed_all_queries = json.loads(all_queries.text)
+        total_queries = len(all_queries["data"])
+        valid_queries = len(query_types)
+        interval = float(LOG_INTERVAL) / valid_queries
 
-            # When determining the rate of DNS queries on the network, we don't want
-            # our past fake queries to skew the statistics, therefore we filter out
-            # queries made by this machine.
-            genuine_queries = []
-            try:
-                for a in parsed_all_queries["data"]:
-                    if a[3] not in cfg["excluded_hosts"]:
-                        genuine_queries.append(a)
-            except Exception:
-                logging.error(
-                    "Got badly formatted pi-hole API response, quitting.")
-                exit(1)
+        if cfg["debugging"]:
+            logging.debug(
+                f"In the interval from {format_time(time_from)} until "
+                f"{format_time(time_until)}, there was on average 1 request "
+                f"every {interval} s. Total queries: {total_queries}, of "
+                f"which {total_queries - valid_queries} are local queries "
+                "(excluded).")
 
-            # Protection in case the pi-hole logs are empty.
-            if len(genuine_queries) == 0:
-                genuine_queries.append("Let's not devide by 0")
-
-            # We want the types of our fake queries (A/AAA/PTR/…) to proportionally
-            # match those of the real traffic.
-            query_types = []
-            try:
-                for a in parsed_all_queries["data"]:
-                    if a[3] not in cfg["excluded_hosts"]:
-                        query_types.append(a[1])
-            except Exception:
-                logging.error(
-                    "Pi-hole API response in wrong format. Investigate.")
-                exit(1)
-
-            # Default to A request if pi-hole logs are empty
-            if len(query_types) == 0:
-                query_types.append("A")
+        # We want to re-sample our "queries per last 5 min" rate
+        # every minute.
+        time_until += QUERY_INTERVAL
+        interval *= 10
+        while time.time() < time_until:
+            domain = get_random_domain(domains_file)
 
             if cfg["debugging"]:
-                logging.debug(
-                    "In the interval from " + time.strftime(
-                        "%Y-%m-%d %H:%M:%S", time.localtime(time_from)) +
-                    " until " + time.strftime("%Y-%m-%d %H:%M:%S",
-                                              time.localtime(time_until)) +
-                    ", there was on average 1 request every " +
-                    str(300.0 / len(genuine_queries)) + "s. Total queries: " +
-                    str(len(parsed_all_queries["data"])) +
-                    ", of those are local queries: " +
-                    str(len(parsed_all_queries["data"]) -
-                        len(genuine_queries)) + " (excluded).")
+                logging.debug(f"Querying {domain}")
 
-            while True:
-                # Pick a random domain from the top 1M list
-                rand = str(random.randint(1, 1000000))
-                cursor = db.cursor()
-                cursor.execute("SELECT Domain FROM Domains WHERE ID=" + rand)
-                domain = cursor.fetchone()[0]
+            try:
+                dns.resolver.query(domain, random.choice(query_types))
+            except Exception:
+                continue
 
-                if cfg["debugging"]:
-                    logging.debug("f Querying: {rand}, {domain}")
-
-                # Try to resolve the domain - that's why we're here in the first place,
-                # isn't it...
-                try:
-                    dns.resolver.query(domain, random.choice(query_types))
-                except Exception:
-                    pass
-
-                # We want to re-sample our "queries per last 5 min" rate every minute.
-                if int(time.mktime(
-                        datetime.datetime.now().timetuple())) - time_until > 60:
-                    break
-
-                # Since we want to add only about 10% of extra DNS queries, we multiply
-                # the wait time by 10, then add a small random delay.
-                time.sleep((300.0 / len(genuine_queries) * 10) +
-                           random.uniform(0, 2))
+            # Since we want to add only about 10% of extra DNS queries, we
+            # multiply the wait time by 10, then add a small random delay.
+            time.sleep(interval + random.uniform(0, 2))
 
 
 if __name__ == '__main__':
