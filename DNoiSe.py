@@ -80,8 +80,7 @@ def wait_for_connection():
 def download_domains(cfg):
     # Download the top 1M domain list if we don't have it yet.
     domains_file = os.path.join(cfg["work_dir"], cfg["domains_file"])
-    local_top_file = domains_file = os.path.join(cfg["work_dir"],
-                                                 "top-1m.csv.zip")
+    local_top_file = os.path.join(cfg["work_dir"], "top-1m.csv.zip")
 
     # Download the Cisco Umbrella list. More info:
     # https://s3-us-west-1.amazonaws.com/umbrella-static/index.html
@@ -93,7 +92,7 @@ def download_domains(cfg):
         exit(1)
 
     # Create a SQLite database and import the domain list
-    logging.info("Creating domains database")
+    logging.info(f"Creating domains database {domains_file}")
     with sqlite3.connect(domains_file) as db:
         try:
             db.execute("CREATE TABLE Domains (ID INT PRIMARY KEY,"
@@ -169,10 +168,11 @@ def get_random_domain(domains_file):
 def main():
     cfg = get_config()
     logfile = os.path.join(cfg["work_dir"], cfg["log_file"])
+    log_level = logging.DEBUG if cfg["debugging"] else logging.INFO
     logging.basicConfig(format='%(asctime)s -- %(message)s',
                         filename=logfile,
                         filemode='w',
-                        level=logging.INFO)
+                        level=log_level)
 
     domains_file = os.path.join(cfg["work_dir"], cfg["domains_file"])
     if not os.path.isfile(domains_file):
@@ -199,13 +199,12 @@ def main():
         valid_queries = len(query_types)
         interval = float(LOG_INTERVAL) / valid_queries
 
-        if cfg["debugging"]:
-            logging.debug(
-                f"In the interval from {format_time(time_from)} until "
-                f"{format_time(time_until)}, there was on average 1 request "
-                f"every {interval} s. Total queries: {total_queries}, of "
-                f"which {total_queries - valid_queries} are local queries "
-                "(excluded).")
+        logging.debug(
+            f"In the interval from {format_time(time_from)} until "
+            f"{format_time(time_until)}, there was on average 1 request "
+            f"every {interval:0.2f} s. Total queries: {total_queries}, of "
+            f"which {total_queries - valid_queries} are local queries "
+            "(excluded).")
 
         # We want to re-sample our "queries per last 5 min" rate
         # every minute.
@@ -214,12 +213,12 @@ def main():
         while time.time() < time_until:
             domain = get_random_domain(domains_file)
 
-            if cfg["debugging"]:
-                logging.debug(f"Querying {domain}")
+            logging.debug(f"Querying {domain}")
 
             try:
                 dns.resolver.query(domain, random.choice(query_types))
             except Exception:
+                logging.debug(f"Query failed, running another query")
                 continue
 
             # Since we want to add only about 10% of extra DNS queries, we
